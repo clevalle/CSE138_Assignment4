@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -52,13 +51,6 @@ var ipToIndex = map[string]int{
 	"10.10.0.4:8090": 2,
 }
 
-// Used in mapping index to replica IP of replicaArray
-// var indexToIp = map[int]string{
-// 	0: "10.10.0.2:8090",
-// 	1: "10.10.0.3:8090",
-// 	2: "10.10.0.4:8090",
-// }
-
 // our local KVS store
 var store = make(map[string]interface{})
 
@@ -92,7 +84,6 @@ func main() {
 	// Handlers for each scenario of input for URL
 	r.HandleFunc("/view", handleView)
 	r.HandleFunc("/kvs/{key}", handleKey)
-	r.HandleFunc("/down/{flag}", handleDown)
 	r.HandleFunc("/getVC", handleGetVC)
 	r.HandleFunc("/getKVS", handleGetKVS)
 
@@ -205,51 +196,6 @@ func getReplicaVectorClock(replicaIP string) [3]int {
 	return response.VC
 }
 
-//initial approach at fault testing our replicas
-//each replica wouldd have a go routine that would, every few seconds, ping each replica in view and make sure its alive
-//if not, it would remove the replica from view
-//this function creation was cut short when we realized that an easier solution would be to just let the replica itself do the heavy lifting
-//and work on its own to request updated data and put itself back in the replica view
-/*
-func aliveCheck() {
-	//give other replicas time to start up
-	time.Sleep(1 * time.Second)
-
-	for aliveCheckConst {
-		for _, replicaIP := range viewArray {
-			if !isAlive(replicaIP) {
-				//if down, but still in our view, this is the first time we are seeing this replica go down, so we need to let the other replicas know and let them update accordingly
-				index := containsVal(replicaIP, replicaArray)
-				if index >= 0 {
-					//remove value from our own replica array
-					replicaArray = removeVal(index, replicaArray)
-
-					//send remove to other replica
-					for _, IP := range replicaArray {
-						if IP != sAddress {
-
-						}
-					}
-
-				}
-			}
-		}
-		time.Sleep(1 * time.Second)
-	}
-
-}
-
-func isAlive(replicaIP string) bool {
-	reachedURL, err := net.DialTimeout("tcp", replicaIP, (2 * time.Second))
-	if err != nil {
-		fmt.Println(replicaIP, " is down! didnt reply within 2 seconds")
-		return false
-	}
-	reachedURL.Close()
-	return true
-}
-*/
-
 // Helper function used to check if the database has been changed
 func isDatabaseChanged(response map[string]interface{}) bool {
 
@@ -348,15 +294,6 @@ func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 	defer resp.Body.Close()
 	return
 }
-
-// func inReplicaArray(addr string) bool {
-// 	for _, viewIP := range replicaArray {
-// 		if viewIP == addr {
-// 			return true
-// 		}
-// 	}
-// 	return false
-// }
 
 // Helper function to check if an array contains a certain value, and at what index
 func containsVal(val string, repArray []string) int {
@@ -669,67 +606,4 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 	}
 	w.Write(jsonResponse)
 
-}
-
-// Handler  function to handle program behavior when we need to restore
-// a replica after it has been down
-func handleDown(w http.ResponseWriter, req *http.Request) {
-	// This function is passed in a "flag" parameter
-	// If the flag is set to 0 -- We must send the kvs store as a response
-	// If the flag is set to 1 -- We must get the store from response and copy into local kvs store
-	param := mux.Vars(req)
-	key := param["flag"]
-	intKey, err := strconv.Atoi(key)
-	if err != nil {
-		log.Fatalf("handleDown Atoi Error: %s", err)
-	}
-
-	response := make(map[string]interface{})
-
-	// checking for what the flag is set to
-	if intKey == 0 {
-		// sending out response as our kvs store
-		response["store"] = store
-
-		jsonResponse, err := json.Marshal(response)
-		if err != nil {
-			log.Fatalf("Error here: %s", err)
-		}
-		w.Write(jsonResponse)
-	} else {
-		// looping thru each replicaIP, until we find an IP that is not the current one
-		for _, replicaIP := range replicaArray {
-			if replicaIP != sAddress {
-				// once we find another replicaIP, we send to them a request for the kvs store
-				client := &http.Client{}
-
-				// note that we send the request to the handledown function, with the added 0 flag
-				req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s/0", replicaIP, req.URL.Path), req.Body)
-				if err != nil {
-					fmt.Println(replicaIP, " is down")
-				}
-
-				// Forwarding the new request
-				resp, err := client.Do(req)
-
-				if err != nil {
-					fmt.Println(replicaIP, " is down")
-				}
-
-				// Closing body of resp, typical after using Client.do()
-				if err == nil {
-					defer resp.Body.Close()
-				}
-
-				// grabbing the store from the request we made, and reassigning our local kvs store
-				result := make(map[string]interface{})
-				json.NewDecoder(resp.Body).Decode(&result)
-
-				store = result["store"].(map[string]interface{})
-
-				// break from the for loop, because we only need to make the request once
-				break
-			}
-		}
-	}
 }
