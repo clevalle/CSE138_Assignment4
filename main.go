@@ -87,6 +87,14 @@ func main() {
 	r.HandleFunc("/getVC", handleGetVC)
 	r.HandleFunc("/getKVS", handleGetKVS)
 
+	// Handlers for sharding requests
+	r.HandleFunc("/shard/ids", handleShardAllId)
+	r.HandleFunc("/shard/node-shard-id", handleShardOneId)
+	r.HandleFunc("/shard/members/{id}", handleShardMembers)
+	r.HandleFunc("/shard/key-count/{id}", handleShardKeyCount)
+	r.HandleFunc("/shard/add-member/{id}", handleShardAddMember)
+	r.HandleFunc("/shard/reshard", handleReshard)
+
 	// function that checks if this replica has just died
 	go didIDie()
 
@@ -605,5 +613,29 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 		log.Fatalf("Error here: %s", err)
 	}
 	w.Write(jsonResponse)
+
+}
+
+func handleShardAllId(w http.ResponseWriter, req *http.Request) {
+
+}
+
+func handleShardOneId(w http.ResponseWriter, req *http.Request) {
+
+}
+
+func handleShardMembers(w http.ResponseWriter, req *http.Request) {
+
+}
+
+func handleShardKeyCount(w http.ResponseWriter, req *http.Request) {
+
+}
+
+func handleShardAddMember(w http.ResponseWriter, req *http.Request) {
+
+}
+
+func handleReshard(w http.ResponseWriter, req *http.Request) {
 
 }
