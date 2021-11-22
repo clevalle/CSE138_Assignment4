@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,8 @@ var sAddress string       // socket address
 var viewArray []string    // array of IP's currently in view i.e. online
 var vectorIndex = -1      // represents which index in replicaArray this current thread is
 var shardCount = -1       // represents # of shards we are given at start of program
+
+var shardSplit = make([][]string, 0)
 
 // first 3 integers represent the vector clock of the local replica
 // 4th vector is the index of the Ip that all replicas have access to
@@ -79,7 +82,13 @@ func main() {
 
 	// grabbing env variables that are passed in
 	vAddresses := os.Getenv("VIEW")
-	shardCount := os.Getenv("SHARD_COUNT")
+	shardCountString := os.Getenv("SHARD_COUNT")
+
+	shardCountOutput, err := strconv.Atoi(shardCountString)
+	if err != nil {
+		fmt.Println("error = ", err)
+	}
+	shardCount = shardCountOutput
 	replicaArray = strings.Split(vAddresses, ",")
 	viewArray = strings.Split(vAddresses, ",")
 
@@ -100,8 +109,22 @@ func main() {
 	// function that checks if this replica has just died
 	go didIDie()
 
+	splitNodes()
+
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
+}
+
+func splitNodes() {
+	for i := 0; i < shardCount; i++ {
+		shardSplit = append(shardSplit, make([]string, 0))
+	}
+
+	for i := 0; i < len(viewArray); i++ {
+		x := i % shardCount
+		shardSplit[x] = append(shardSplit[x], viewArray[i])
+	}
+	fmt.Println("shardSplit ===", shardSplit)
 }
 
 // Used to check if current replica has just died
