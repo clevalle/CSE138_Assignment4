@@ -41,7 +41,7 @@ var viewArray []string    // array of IP's currently in view i.e. online
 var vectorIndex = -1      // represents which index in replicaArray this current thread is
 var shardCount = -1       // represents # of shards we are given at start of program
 
-var shardSplit = make([][]string, 0)
+var shardSplit = make(map[string][]string)
 
 // first 3 integers represent the vector clock of the local replica
 // 4th vector is the index of the Ip that all replicas have access to
@@ -109,26 +109,42 @@ func main() {
 	// function that checks if this replica has just died
 	go didIDie()
 
-	// splitting nodes into shards
 	splitNodes()
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
 }
 
-// Helper func used to split all the nodes into shards
+func findKey(m map[string][]string, value string) (key string, ok bool) {
+	for k, v := range m {
+		if containsVal(value, v) >= 0 {
+			key = k
+			ok = true
+			return
+		}
+	}
+	return
+}
+
 func splitNodes() {
-	// initializing each array in our 2d array shardSplit
+	shardSplitArray := make([][]string, 0)
+
 	for i := 0; i < shardCount; i++ {
-		shardSplit = append(shardSplit, make([]string, 0))
+		shardSplitArray = append(shardSplitArray, make([]string, 0))
 	}
 
-	// Appending nodes to each shard based on a modulo of their index in the viewarray
 	for i := 0; i < len(viewArray); i++ {
 		x := i % shardCount
-		shardSplit[x] = append(shardSplit[x], viewArray[i])
+		shardSplitArray[x] = append(shardSplitArray[x], viewArray[i])
 	}
+
+	for i := 0; i < shardCount; i++ {
+		shardName := "s" + strconv.Itoa(i)
+		shardSplit[shardName] = shardSplitArray[i]
+	}
+	fmt.Println("shardSplitArray ===", shardSplitArray)
 	fmt.Println("shardSplit ===", shardSplit)
+
 }
 
 // Used to check if current replica has just died
@@ -650,6 +666,14 @@ func handleShardAllId(w http.ResponseWriter, req *http.Request) {
 }
 
 func handleShardOneId(w http.ResponseWriter, req *http.Request) {
+	if req.Method == "GET" {
+		/*
+			key, ok := findKey(hashMap, value)
+			if !ok {
+			panic("value does not exist in map")
+			}
+		*/
+	}
 
 }
 
