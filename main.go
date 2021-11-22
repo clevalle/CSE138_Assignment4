@@ -107,7 +107,7 @@ func main() {
 	r.HandleFunc("/shard/reshard", handleReshard)
 
 	// function that checks if this replica has just died
-	go didIDie()
+	//go didIDie()
 
 	splitNodes()
 
@@ -662,22 +662,66 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 }
 
 func handleShardAllId(w http.ResponseWriter, req *http.Request) {
+	allId := make([]string, 0)
+	response := make(map[string]interface{})
+
+	if req.Method == "GET" {
+		for key := range shardSplit {
+			allId = append(allId, key)
+		}
+		w.WriteHeader(http.StatusOK)
+		response["shard-ids"] = allId
+	}
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Fatalf("Error here: %s", err)
+	}
+	w.Write(jsonResponse)
 
 }
 
 func handleShardOneId(w http.ResponseWriter, req *http.Request) {
+
+	response := make(map[string]interface{})
+
 	if req.Method == "GET" {
-		/*
-			key, ok := findKey(hashMap, value)
-			if !ok {
+		key, ok := findKey(shardSplit, sAddress)
+		if !ok {
 			panic("value does not exist in map")
-			}
-		*/
+		}
+		w.WriteHeader(http.StatusOK)
+		response["node-shard-id"] = key
 	}
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Fatalf("Error here: %s", err)
+	}
+	w.Write(jsonResponse)
 
 }
 
 func handleShardMembers(w http.ResponseWriter, req *http.Request) {
+	param := mux.Vars(req)
+	id := param["id"]
+
+	response := make(map[string]interface{})
+
+	if req.Method == "GET" {
+		if shardArray, ok := shardSplit[id]; ok {
+			w.WriteHeader(http.StatusOK)
+			response["shardMembers"] = shardArray
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Fatalf("Error here: %s", err)
+	}
+	w.Write(jsonResponse)
 
 }
 
