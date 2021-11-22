@@ -109,17 +109,21 @@ func main() {
 	// function that checks if this replica has just died
 	go didIDie()
 
+	// splitting nodes into shards
 	splitNodes()
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
 }
 
+// Helper func used to split all the nodes into shards
 func splitNodes() {
+	// initializing each array in our 2d array shardSplit
 	for i := 0; i < shardCount; i++ {
 		shardSplit = append(shardSplit, make([]string, 0))
 	}
 
+	// Appending nodes to each shard based on a modulo of their index in the viewarray
 	for i := 0; i < len(viewArray); i++ {
 		x := i % shardCount
 		shardSplit[x] = append(shardSplit[x], viewArray[i])
