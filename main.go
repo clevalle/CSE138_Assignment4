@@ -38,6 +38,7 @@ var replicaCount = 0      // local Counter for number of replicas online
 var sAddress string       // socket address
 var viewArray []string    // array of IP's currently in view i.e. online
 var vectorIndex = -1      // represents which index in replicaArray this current thread is
+var shardCount = -1       // represents # of shards we are given at start of program
 
 // first 3 integers represent the vector clock of the local replica
 // 4th vector is the index of the Ip that all replicas have access to
@@ -76,8 +77,9 @@ func main() {
 		vectorIndex = 2
 	}
 
-	//update the view to hold the three current replica addresses
+	// grabbing env variables that are passed in
 	vAddresses := os.Getenv("VIEW")
+	shardCount := os.Getenv("SHARD_COUNT")
 	replicaArray = strings.Split(vAddresses, ",")
 	viewArray = strings.Split(vAddresses, ",")
 
