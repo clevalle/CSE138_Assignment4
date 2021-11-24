@@ -1,2 +1,5 @@
 used to find key associated with a value
 https://stackoverflow.com/questions/33701828/simple-way-of-getting-key-depending-on-value-from-hashmap-in-golang
+
+used to create a hash from given string key
+https://stackoverflow.com/questions/13582519/how-to-generate-hash-number-of-a-string-in-go

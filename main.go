@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net"
@@ -114,6 +115,12 @@ func main() {
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
+}
+
+func hash(key string) int {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return int(h.Sum32()) % shardCount
 }
 
 func getShardKeyCount(ipInShard string, shardId string) []byte {
@@ -434,6 +441,9 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	//check which shard it belongs to
+	hashedKeyIndex := hash(key)
+
 	// assigning metadata from our request
 	metadata := reqVals.CausalMetadata
 
@@ -490,6 +500,7 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if _, violation := response["error"]; !violation {
+
 		// PUT case
 		if req.Method == "PUT" {
 
