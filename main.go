@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -113,6 +114,20 @@ func main() {
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
+}
+
+func getShardKeyCount(ipInShard string, shardId string) []byte {
+	res, err := http.Get(fmt.Sprintf("http://%s/shard/key-count/%s", ipInShard, shardId))
+	if err != nil {
+		fmt.Println("problem creating new http request")
+	}
+
+	// decoding the response of new request
+	returnBytes, err := io.ReadAll(res.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return returnBytes
 }
 
 func findKey(m map[string][]string, value string) (key string, ok bool) {
@@ -726,10 +741,52 @@ func handleShardMembers(w http.ResponseWriter, req *http.Request) {
 }
 
 func handleShardKeyCount(w http.ResponseWriter, req *http.Request) {
+	param := mux.Vars(req)
+	id := param["id"]
+
+	response := make(map[string]interface{})
+
+	if req.Method == "GET" {
+		key, ok := findKey(shardSplit, sAddress)
+		if !ok {
+			panic("value does not exist in map")
+		}
+		if key == id {
+			w.WriteHeader(http.StatusOK)
+			response["shard-key-count"] = len(store)
+
+			jsonResponse, err := json.Marshal(response)
+			if err != nil {
+				log.Fatalf("Error here: %s", err)
+			}
+			w.Write(jsonResponse)
+		} else {
+			//key isnt equal to id, meaning this replica is not a member of the shard we want the key count of
+
+			//grab first ip thats a member of desired shard
+			ipInShard := shardSplit[id][0]
+			forwardResponse := getShardKeyCount(ipInShard, id)
+			w.Write(forwardResponse)
+		}
+
+	}
 
 }
 
 func handleShardAddMember(w http.ResponseWriter, req *http.Request) {
+	param := mux.Vars(req)
+	id := param["id"]
+
+	// create dict variable to hold inputted value
+	var reqVals map[string]string
+
+	// handles pulling out and storing value into newVal
+	err := json.NewDecoder(req.Body).Decode(&reqVals)
+	if err != nil {
+		log.Fatalf("Error couldnt decode: %s", err)
+		return
+	}
+	reqIp := reqVals["socket-address"]
 
 }
 
