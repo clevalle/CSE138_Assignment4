@@ -365,7 +365,7 @@ func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 					return
 				}
 				defer res.Body.Close()
-				fmt.Println("delete body == ", res.Body)
+				//fmt.Println("delete body == ", res.Body)
 			}
 		}
 		return
@@ -447,6 +447,8 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 	// create dict variable to hold inputted value
 	var reqVals message
 
+	fmt.Println("req.Body === \n", req.Body)
+
 	// handles pulling out and storing value into newVal
 	err := json.NewDecoder(req.Body).Decode(&reqVals)
 	if err != nil {
@@ -459,6 +461,7 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 	//if true key belongs to shard we are in, so handle accordingly
 	//if false, key belongs to another shard, so forawr request to first ip in correct shard
 	if hashIndexArr[hashedKeyIndex] == ipToShardMap[sAddress] {
+		fmt.Println("hashing at: ", sAddress)
 
 		// assigning metadata from our request
 		metadata := reqVals.CausalMetadata
@@ -607,7 +610,8 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 					//broadcast to other replicas
 					for _, replicaIP := range replicaArray {
 						if replicaIP != sAddress {
-							broadcastMessage(replicaIP, req, updatedBody)
+							//need to update so that we only broadcast to replicas inside our own shard
+							//broadcastMessage(replicaIP, req, updatedBody)
 						}
 					}
 				}
@@ -620,18 +624,28 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 		fmt.Println("localvector after request is processed === ", localVector)
 		fmt.Println("view after kvs update === ", replicaArray)
 		// sending correct response / status code back to client
+		fmt.Println("response === ", response)
 		jsonResponse, err := json.Marshal(response)
 		if err != nil {
 			log.Fatalf("Error: %s", err)
 		}
 		w.Write(jsonResponse)
 	} else {
+		forwardRequest := make(map[string]interface{})
+		forwardRequest["value"] = reqVals.Value
+		forwardRequest["causal-metadata"] = reqVals.CausalMetadata
+		marshalledRequest, err := json.Marshal(forwardRequest)
+		if err != nil {
+			log.Fatalf("couldnt marshall: %s", err)
+		}
 		shardToForwardRequest := hashIndexArr[hashedKeyIndex]
 		replicaIP := shardSplit[shardToForwardRequest][0]
 		client := &http.Client{}
 
+		fmt.Println("key hashed to ", shardToForwardRequest, " sending to ", replicaIP)
+
 		// Creating new request
-		req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), req.Body)
+		req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), bytes.NewBuffer(marshalledRequest))
 		if err != nil {
 			fmt.Println("problem creating new http request")
 			return
@@ -643,14 +657,17 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		// Closing body of resp, typical after using Client.do()
-		defer resp.Body.Close()
+		//defer resp.Body.Close()
 
 		returnBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
 			log.Fatal(err)
 		}
+		forwardRequest = make(map[string]interface{})
+		err = json.Unmarshal(returnBytes, &forwardRequest)
+		fmt.Println("forwardrequest ==", forwardRequest)
 		// sending correct response / status code back to client
-		jsonResponse, err := json.Marshal(returnBytes)
+		jsonResponse, err := json.Marshal(forwardRequest)
 		if err != nil {
 			log.Fatalf("Error: %s", err)
 		}
