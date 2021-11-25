@@ -26,14 +26,14 @@ type message struct {
 
 // reqMetaData is used to unpack request vals when they actually exist and are not null so they can be easily assigned a type
 type ReqMetaData struct {
-	ReqVector       [3]int `json:"ReqVector, omitempty"`
-	ReqIpIndex      int    `json:"ReqIpIndex, omitempty"`
-	IsReqFromClient bool   `json:"IsReqFromClient, omitempty"`
+	ReqVector       []int `json:"ReqVector, omitempty"`
+	ReqIpIndex      int   `json:"ReqIpIndex, omitempty"`
+	IsReqFromClient bool  `json:"IsReqFromClient, omitempty"`
 }
 
 // declaring our Vector Clock, which we'll use for causal consistency
 type VectorClock struct {
-	VC [3]int `json:"VC, omitempty"`
+	VC []int `json:"VC, omitempty"`
 }
 
 var replicaArray []string // holds IP's of all replicas
@@ -50,14 +50,10 @@ var hashIndexArr []string
 // first 3 integers represent the vector clock of the local replica
 // 4th vector is the index of the Ip that all replicas have access to
 // 5th vector is the binary toggle (1 or 0) that determines if the data was from a client (1) or a replica (0)
-var localVector = [3]int{0, 0, 0}
+var localVector []int
 
 // Used in mapping replica IP to index of the replicaArray
-var ipToIndex = map[string]int{
-	"10.10.0.2:8090": 0,
-	"10.10.0.3:8090": 1,
-	"10.10.0.4:8090": 2,
-}
+var ipToIndex = make(map[string]int)
 
 // our local KVS store
 var store = make(map[string]interface{})
@@ -72,18 +68,6 @@ func main() {
 	//pulls unique replica address from env variable
 	sAddress = os.Getenv("SOCKET_ADDRESS")
 
-	//sets index for each unique socket address so that vector clock can be incremented correctly
-	//i.e. replica index 0 always increments the first value in the vector (array) and so on
-	//the fourth value being sent is the index of the message sender, so that the reciever knows
-	//which place to check for a value greater than its own vector clock
-	if sAddress == "10.10.0.2:8090" {
-		vectorIndex = 0
-	} else if sAddress == "10.10.0.3:8090" {
-		vectorIndex = 1
-	} else if sAddress == "10.10.0.4:8090" {
-		vectorIndex = 2
-	}
-
 	// grabbing env variables that are passed in
 	vAddresses := os.Getenv("VIEW")
 	shardCountString := os.Getenv("SHARD_COUNT")
@@ -95,6 +79,18 @@ func main() {
 	shardCount = shardCountOutput
 	replicaArray = strings.Split(vAddresses, ",")
 	viewArray = strings.Split(vAddresses, ",")
+
+	for index, ip := range viewArray {
+		ipToIndex[ip] = index
+		localVector = append(localVector, 0)
+		if ip == sAddress {
+			vectorIndex = index
+		}
+	}
+
+	fmt.Println("ip to index == ", ipToIndex)
+	fmt.Println("vector index ===", vectorIndex)
+	fmt.Println("localVector === ", localVector)
 
 	// Handlers for each scenario of input for URL
 	r.HandleFunc("/view", handleView)
@@ -117,6 +113,15 @@ func main() {
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
+}
+
+func compareSlices(s1 []int, s2 []int) bool {
+	for i, v := range s2 {
+		if v != s1[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func hash(key string) int {
@@ -190,7 +195,7 @@ func didIDie() {
 			fmt.Println("repVC === ", repVC)
 
 			// if other replica's VC is not equal to our own
-			if repVC != localVector {
+			if !compareSlices(repVC, localVector) {
 				//set local VC to grabbed VC
 				localVector = repVC
 				//we know we died and need to grab the new KVS
@@ -258,7 +263,7 @@ func getReplicaKVS(replicaIP string) map[string]interface{} {
 }
 
 // Function used  to get the vector clock of another replica
-func getReplicaVectorClock(replicaIP string) [3]int {
+func getReplicaVectorClock(replicaIP string) []int {
 	var response VectorClock
 
 	// Creating new request
