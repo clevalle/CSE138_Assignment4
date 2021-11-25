@@ -44,6 +44,8 @@ var vectorIndex = -1      // represents which index in replicaArray this current
 var shardCount = -1       // represents # of shards we are given at start of program
 
 var shardSplit = make(map[string][]string)
+var ipToShardMap = make(map[string]string)
+var hashIndexArr []string
 
 // first 3 integers represent the vector clock of the local replica
 // 4th vector is the index of the Ip that all replicas have access to
@@ -111,7 +113,7 @@ func main() {
 	// function that checks if this replica has just died
 	//go didIDie()
 
-	splitNodes()
+	splitNodes(shardCount)
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
@@ -148,24 +150,30 @@ func findKey(m map[string][]string, value string) (key string, ok bool) {
 	return
 }
 
-func splitNodes() {
+func splitNodes(shardAmount int) {
 	shardSplitArray := make([][]string, 0)
+	shardCount = shardAmount
+	hashIndexArr = nil
 
-	for i := 0; i < shardCount; i++ {
+	for i := 0; i < shardAmount; i++ {
 		shardSplitArray = append(shardSplitArray, make([]string, 0))
 	}
 
 	for i := 0; i < len(viewArray); i++ {
-		x := i % shardCount
+		x := i % shardAmount
 		shardSplitArray[x] = append(shardSplitArray[x], viewArray[i])
+		ipToShardMap[viewArray[i]] = "s" + strconv.Itoa(x)
 	}
 
 	for i := 0; i < shardCount; i++ {
 		shardName := "s" + strconv.Itoa(i)
 		shardSplit[shardName] = shardSplitArray[i]
+		hashIndexArr = append(hashIndexArr, shardName)
 	}
 	fmt.Println("shardSplitArray ===", shardSplitArray)
 	fmt.Println("shardSplit ===", shardSplit)
+	fmt.Println("hashIndex arr", hashIndexArr)
+	fmt.Println("\n\n ip to shard mapping === \n", ipToShardMap)
 
 }
 
@@ -443,173 +451,206 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 
 	//check which shard it belongs to
 	hashedKeyIndex := hash(key)
+	//if true key belongs to shard we are in, so handle accordingly
+	//if false, key belongs to another shard, so forawr request to first ip in correct shard
+	if hashIndexArr[hashedKeyIndex] == ipToShardMap[sAddress] {
 
-	// assigning metadata from our request
-	metadata := reqVals.CausalMetadata
+		// assigning metadata from our request
+		metadata := reqVals.CausalMetadata
 
-	fmt.Println("localvector on recieve === ", localVector)
+		fmt.Println("localvector on recieve === ", localVector)
 
-	// If metadata is not empty, we  know that this is not first interaction with client
-	if metadata != nil {
-		reqVector := metadata.ReqVector
-		responseMetadata.IsReqFromClient = metadata.IsReqFromClient
-		fmt.Println("vector clock from request === ", reqVector)
-		//fmt.Println("IP index === ", metadata.ReqIpIndex)
-		//fmt.Println("req from client? === ", metadata.IsReqFromClient)
+		// If metadata is not empty, we  know that this is not first interaction with client
+		if metadata != nil {
+			reqVector := metadata.ReqVector
+			responseMetadata.IsReqFromClient = metadata.IsReqFromClient
+			fmt.Println("vector clock from request === ", reqVector)
+			//fmt.Println("IP index === ", metadata.ReqIpIndex)
+			//fmt.Println("req from client? === ", metadata.IsReqFromClient)
 
-		//check for consistency violations
-		for i := 0; i < len(reqVector); i++ {
-			if metadata.IsReqFromClient {
-				if reqVector[i] > localVector[i] {
-					//consistency violation
-					//fmt.Println("bigger in the ", i, " position")
-					w.WriteHeader(http.StatusServiceUnavailable)
-					response["error"] = "Causal dependencies not satisfied; try again later"
-				}
-			} else {
-				if i == metadata.ReqIpIndex {
-					if reqVector[i] != localVector[i]+1 {
+			//check for consistency violations
+			for i := 0; i < len(reqVector); i++ {
+				if metadata.IsReqFromClient {
+					if reqVector[i] > localVector[i] {
 						//consistency violation
-						//fmt.Println("bigger in the metadata.repipindex position: ", reqVector[i], " != ", localVector[i]+1, " when i = ", i)
+						//fmt.Println("bigger in the ", i, " position")
 						w.WriteHeader(http.StatusServiceUnavailable)
 						response["error"] = "Causal dependencies not satisfied; try again later"
 					}
-				} else if reqVector[i] > localVector[i] {
-					//consistency violation
-					//fmt.Println("bigger in the ", i, " position")
-					w.WriteHeader(http.StatusServiceUnavailable)
-					response["error"] = "Causal dependencies not satisfied; try again later"
+				} else {
+					if i == metadata.ReqIpIndex {
+						if reqVector[i] != localVector[i]+1 {
+							//consistency violation
+							//fmt.Println("bigger in the metadata.repipindex position: ", reqVector[i], " != ", localVector[i]+1, " when i = ", i)
+							w.WriteHeader(http.StatusServiceUnavailable)
+							response["error"] = "Causal dependencies not satisfied; try again later"
+						}
+					} else if reqVector[i] > localVector[i] {
+						//consistency violation
+						//fmt.Println("bigger in the ", i, " position")
+						w.WriteHeader(http.StatusServiceUnavailable)
+						response["error"] = "Causal dependencies not satisfied; try again later"
+					}
 				}
 			}
+
+			// if no causal dependency is detected, set the local clock to the max of the local clock and request clock
+			if _, violation := response["error"]; !violation {
+				if req.Method != "GET" {
+					for i := 0; i < len(reqVector); i++ {
+						if reqVector[i] > localVector[i] {
+							localVector[i] = reqVector[i]
+						}
+					}
+				}
+			}
+
+		} else {
+			//handling inital nil case all future client requests will increment local clock when getting the max
+			responseMetadata.IsReqFromClient = true
 		}
 
-		// if no causal dependency is detected, set the local clock to the max of the local clock and request clock
 		if _, violation := response["error"]; !violation {
-			if req.Method != "GET" {
-				for i := 0; i < len(reqVector); i++ {
-					if reqVector[i] > localVector[i] {
-						localVector[i] = reqVector[i]
-					}
+
+			// PUT case
+			if req.Method == "PUT" {
+
+				val := reqVals.Value
+				// handling cases where user input is:
+				// 1. invalid (key too long)
+				// 2. invalid (no value specified)
+				// 3. being replaced (key already exists)
+				// 4. being created (key does not exist)
+				if len(key) > 50 {
+					w.WriteHeader(http.StatusBadRequest)
+					response["error"] = "Key is too long"
+				} else if val == nil {
+					w.WriteHeader(http.StatusBadRequest)
+					response["error"] = "PUT request does not specify a value"
+				} else if _, ok := store[key]; ok {
+					w.WriteHeader(http.StatusOK)
+					response["result"] = "updated"
+					store[key] = val
+				} else {
+					w.WriteHeader(http.StatusCreated)
+					response["result"] = "created"
+					store[key] = val
+				}
+
+				// GET case
+			} else if req.Method == "GET" {
+
+				// handling cases where user input is:
+				// 1. valid (key exists)
+				// 2. invalid (key does not exist)
+				if _, ok := store[key]; ok {
+					w.WriteHeader(http.StatusOK)
+					response["result"] = "found"
+					response["value"] = store[key]
+				} else {
+					w.WriteHeader(http.StatusNotFound)
+					response["error"] = "Key does not exist"
+				}
+
+				// DELETE case
+			} else if req.Method == "DELETE" {
+
+				// handling cases where user input is;
+				// 1. valid (key exists)
+				// 2. invalid (key does not exist)
+				if _, ok := store[key]; ok {
+					w.WriteHeader(http.StatusOK)
+					response["result"] = "deleted"
+					delete(store, key)
+				} else {
+					w.WriteHeader(http.StatusNotFound)
+					response["error"] = "Key does not exist"
 				}
 			}
-		}
 
-	} else {
-		//handling inital nil case all future client requests will increment local clock when getting the max
-		responseMetadata.IsReqFromClient = true
-	}
-
-	if _, violation := response["error"]; !violation {
-
-		// PUT case
-		if req.Method == "PUT" {
-
-			val := reqVals.Value
-			// handling cases where user input is:
-			// 1. invalid (key too long)
-			// 2. invalid (no value specified)
-			// 3. being replaced (key already exists)
-			// 4. being created (key does not exist)
-			if len(key) > 50 {
-				w.WriteHeader(http.StatusBadRequest)
-				response["error"] = "Key is too long"
-			} else if val == nil {
-				w.WriteHeader(http.StatusBadRequest)
-				response["error"] = "PUT request does not specify a value"
-			} else if _, ok := store[key]; ok {
-				w.WriteHeader(http.StatusOK)
-				response["result"] = "updated"
-				store[key] = val
-			} else {
-				w.WriteHeader(http.StatusCreated)
-				response["result"] = "created"
-				store[key] = val
-			}
-
-			// GET case
-		} else if req.Method == "GET" {
-
-			// handling cases where user input is:
-			// 1. valid (key exists)
-			// 2. invalid (key does not exist)
-			if _, ok := store[key]; ok {
-				w.WriteHeader(http.StatusOK)
-				response["result"] = "found"
-				response["value"] = store[key]
-			} else {
-				w.WriteHeader(http.StatusNotFound)
-				response["error"] = "Key does not exist"
-			}
-
-			// DELETE case
-		} else if req.Method == "DELETE" {
-
-			// handling cases where user input is;
-			// 1. valid (key exists)
-			// 2. invalid (key does not exist)
-			if _, ok := store[key]; ok {
-				w.WriteHeader(http.StatusOK)
-				response["result"] = "deleted"
-				delete(store, key)
-			} else {
-				w.WriteHeader(http.StatusNotFound)
-				response["error"] = "Key does not exist"
-			}
-		}
-
-		// reassigning necessary values in our response metadata
-		responseMetadata.ReqVector = localVector
-		responseMetadata.ReqIpIndex = ipToIndex[sAddress]
-
-		// checking if we changed our database, and if so, to increment VC
-		if isDatabaseChanged(response) {
-			// Incrementing if the request is from the client
-			if responseMetadata.IsReqFromClient {
-				localVector[vectorIndex]++
-			}
-
-			//update response to updated clock index
+			// reassigning necessary values in our response metadata
 			responseMetadata.ReqVector = localVector
+			responseMetadata.ReqIpIndex = ipToIndex[sAddress]
 
-			//if from client we need to broadcast req to other replicas
-			//if from replica, we dont do anything here
-			if responseMetadata.IsReqFromClient {
-				var broadcastMetadata ReqMetaData
-				broadcastMetadata.ReqVector = localVector
-				broadcastMetadata.ReqIpIndex = ipToIndex[sAddress]
-				broadcastMetadata.IsReqFromClient = false
-				broadcastResponse["value"] = reqVals.Value
-				broadcastResponse["causal-metadata"] = broadcastMetadata
-				updatedBody, err := json.Marshal(broadcastResponse)
-				if err != nil {
-					log.Fatalf("response not marshalled: %s", err)
-					return
+			// checking if we changed our database, and if so, to increment VC
+			if isDatabaseChanged(response) {
+				// Incrementing if the request is from the client
+				if responseMetadata.IsReqFromClient {
+					localVector[vectorIndex]++
 				}
 
-				fmt.Println("updated body ===", string(updatedBody))
+				//update response to updated clock index
+				responseMetadata.ReqVector = localVector
 
-				//broadcast to other replicas
-				for _, replicaIP := range replicaArray {
-					if replicaIP != sAddress {
-						broadcastMessage(replicaIP, req, updatedBody)
+				//if from client we need to broadcast req to other replicas
+				//if from replica, we dont do anything here
+				if responseMetadata.IsReqFromClient {
+					var broadcastMetadata ReqMetaData
+					broadcastMetadata.ReqVector = localVector
+					broadcastMetadata.ReqIpIndex = ipToIndex[sAddress]
+					broadcastMetadata.IsReqFromClient = false
+					broadcastResponse["value"] = reqVals.Value
+					broadcastResponse["causal-metadata"] = broadcastMetadata
+					updatedBody, err := json.Marshal(broadcastResponse)
+					if err != nil {
+						log.Fatalf("response not marshalled: %s", err)
+						return
+					}
+
+					fmt.Println("updated body ===", string(updatedBody))
+
+					//broadcast to other replicas
+					for _, replicaIP := range replicaArray {
+						if replicaIP != sAddress {
+							broadcastMessage(replicaIP, req, updatedBody)
+						}
 					}
 				}
 			}
+
+			//set responses metadata to updated metadata
+			response["causal-metadata"] = responseMetadata
+			response["shard-id"] = ipToShardMap[sAddress]
 		}
+		fmt.Println("localvector after request is processed === ", localVector)
+		fmt.Println("view after kvs update === ", replicaArray)
+		// sending correct response / status code back to client
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			log.Fatalf("Error: %s", err)
+		}
+		w.Write(jsonResponse)
+	} else {
+		shardToForwardRequest := hashIndexArr[hashedKeyIndex]
+		replicaIP := shardSplit[shardToForwardRequest][0]
+		client := &http.Client{}
 
-		//set responses metadata to updated metadata
-		response["causal-metadata"] = responseMetadata
+		// Creating new request
+		req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), req.Body)
+		if err != nil {
+			fmt.Println("problem creating new http request")
+			return
+		}
+		// Forwarding the new request
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Println(replicaIP, " is down due to: ", err)
+			return
+		}
+		// Closing body of resp, typical after using Client.do()
+		defer resp.Body.Close()
+
+		returnBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Fatal(err)
+		}
+		// sending correct response / status code back to client
+		jsonResponse, err := json.Marshal(returnBytes)
+		if err != nil {
+			log.Fatalf("Error: %s", err)
+		}
+		w.Write(jsonResponse)
 	}
-	fmt.Println("localvector after request is processed === ", localVector)
-	fmt.Println("view after kvs update === ", replicaArray)
-
-	// sending correct response / status code back to client
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		log.Fatalf("Error: %s", err)
-	}
-	w.Write(jsonResponse)
-
 }
 
 // Handler function that handles all program behavior regarding view operations
@@ -785,19 +826,21 @@ func handleShardKeyCount(w http.ResponseWriter, req *http.Request) {
 }
 
 func handleShardAddMember(w http.ResponseWriter, req *http.Request) {
-	param := mux.Vars(req)
-	id := param["id"]
+	/*
+		param := mux.Vars(req)
+		id := param["id"]
 
-	// create dict variable to hold inputted value
-	var reqVals map[string]string
+		// create dict variable to hold inputted value
+		var reqVals map[string]string
 
-	// handles pulling out and storing value into newVal
-	err := json.NewDecoder(req.Body).Decode(&reqVals)
-	if err != nil {
-		log.Fatalf("Error couldnt decode: %s", err)
-		return
-	}
-	reqIp := reqVals["socket-address"]
+		// handles pulling out and storing value into newVal
+		err := json.NewDecoder(req.Body).Decode(&reqVals)
+		if err != nil {
+			log.Fatalf("Error couldnt decode: %s", err)
+			return
+		}
+		reqIp := reqVals["socket-address"]
+	*/
 
 }
 
