@@ -46,6 +46,7 @@ var shardCount = -1       // represents # of shards we are given at start of pro
 var shardSplit = make(map[string][]string)
 var ipToShardMap = make(map[string]string)
 var hashIndexArr []string
+var currentShard string
 
 // first 3 integers represent the vector clock of the local replica
 // 4th vector is the index of the Ip that all replicas have access to
@@ -105,14 +106,41 @@ func main() {
 	r.HandleFunc("/shard/key-count/{id}", handleShardKeyCount)
 	r.HandleFunc("/shard/add-member/{id}", handleShardAddMember)
 	r.HandleFunc("/shard/reshard", handleReshard)
+	r.HandleFunc("/shard/broadcast/add/{id}", handleBroadcastedAdd)
 
 	// function that checks if this replica has just died
 	//go didIDie()
 
 	splitNodes(shardCount)
+	currentShard = ipToShardMap[sAddress]
+	fmt.Println("current shard = ", currentShard)
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
+}
+
+func forwardReq(rMethod string, rIP string, rPath string, rBody []byte) ([]byte, int) {
+	client := &http.Client{}
+	// Creating new request
+	req, err := http.NewRequest(rMethod, fmt.Sprintf("http://%s%s", rIP, rPath), bytes.NewBuffer(rBody))
+	if err != nil {
+		log.Fatalf("problem creating new http request: %s", err)
+	}
+	// Forwarding the new request
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("%s is down due to: %s", rIP, err)
+	}
+	// Closing body of resp, typical after using Client.do()
+	//defer resp.Body.Close()
+	if resp != nil {
+		returnBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Fatal(err)
+		}
+		return returnBytes, resp.StatusCode
+	}
+	return make([]byte, 0), http.StatusBadRequest
 }
 
 func compareSlices(s1 []int, s2 []int) bool {
@@ -135,7 +163,7 @@ func getShardKeyCount(ipInShard string, shardId string) []byte {
 	if err != nil {
 		fmt.Println("problem creating new http request")
 	}
-
+	fmt.Println(shardId, "outside", currentShard, "scope. grabbing key count from", ipInShard)
 	// decoding the response of new request
 	returnBytes, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -399,6 +427,21 @@ func removeVal(index int, repArray []string) []string {
 	return repArray[:len(repArray)-1]
 }
 
+func handleBroadcastedAdd(w http.ResponseWriter, req *http.Request) {
+	fmt.Println("broadcast recieved")
+	param := mux.Vars(req)
+	id := param["id"]
+	var reqVals map[string]string
+	err := json.NewDecoder(req.Body).Decode(&reqVals)
+	if err != nil {
+		log.Fatalf("Error couldnt decode: %s", err)
+		return
+	}
+	shardSplit[id] = append(shardSplit[id], reqVals["add-ip"])
+	fmt.Println("shard split updated to: ", shardSplit)
+	w.WriteHeader(http.StatusOK)
+}
+
 // Handler Function that handles when we are given a request to return
 // our local VC, which we send out as a JSON object
 func handleGetVC(w http.ResponseWriter, req *http.Request) {
@@ -608,10 +651,10 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 					fmt.Println("updated body ===", string(updatedBody))
 
 					//broadcast to other replicas
-					for _, replicaIP := range replicaArray {
+					for _, replicaIP := range shardSplit[currentShard] {
 						if replicaIP != sAddress {
 							//need to update so that we only broadcast to replicas inside our own shard
-							//broadcastMessage(replicaIP, req, updatedBody)
+							broadcastMessage(replicaIP, req, updatedBody)
 						}
 					}
 				}
@@ -640,37 +683,10 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 		}
 		shardToForwardRequest := hashIndexArr[hashedKeyIndex]
 		replicaIP := shardSplit[shardToForwardRequest][0]
-		client := &http.Client{}
 
 		fmt.Println("key hashed to ", shardToForwardRequest, " sending to ", replicaIP)
-
-		// Creating new request
-		req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s%s", replicaIP, req.URL.Path), bytes.NewBuffer(marshalledRequest))
-		if err != nil {
-			fmt.Println("problem creating new http request")
-			return
-		}
-		// Forwarding the new request
-		resp, err := client.Do(req)
-		if err != nil {
-			fmt.Println(replicaIP, " is down due to: ", err)
-			return
-		}
-		// Closing body of resp, typical after using Client.do()
-		//defer resp.Body.Close()
-
-		returnBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
-		forwardRequest = make(map[string]interface{})
-		err = json.Unmarshal(returnBytes, &forwardRequest)
-		fmt.Println("forwardrequest ==", forwardRequest)
-		// sending correct response / status code back to client
-		jsonResponse, err := json.Marshal(forwardRequest)
-		if err != nil {
-			log.Fatalf("Error: %s", err)
-		}
+		jsonResponse, statusCode := forwardReq(req.Method, replicaIP, req.URL.Path, marshalledRequest)
+		w.WriteHeader(statusCode)
 		w.Write(jsonResponse)
 	}
 }
@@ -775,12 +791,8 @@ func handleShardOneId(w http.ResponseWriter, req *http.Request) {
 	response := make(map[string]interface{})
 
 	if req.Method == "GET" {
-		key, ok := findKey(shardSplit, sAddress)
-		if !ok {
-			panic("value does not exist in map")
-		}
 		w.WriteHeader(http.StatusOK)
-		response["node-shard-id"] = key
+		response["node-shard-id"] = currentShard
 	}
 
 	jsonResponse, err := json.Marshal(response)
@@ -821,11 +833,7 @@ func handleShardKeyCount(w http.ResponseWriter, req *http.Request) {
 	response := make(map[string]interface{})
 
 	if req.Method == "GET" {
-		key, ok := findKey(shardSplit, sAddress)
-		if !ok {
-			panic("value does not exist in map")
-		}
-		if key == id {
+		if currentShard == id {
 			w.WriteHeader(http.StatusOK)
 			response["shard-key-count"] = len(store)
 
@@ -835,12 +843,17 @@ func handleShardKeyCount(w http.ResponseWriter, req *http.Request) {
 			}
 			w.Write(jsonResponse)
 		} else {
-			//key isnt equal to id, meaning this replica is not a member of the shard we want the key count of
+			//check if id is even a shard
+			if _, ok := shardSplit[id]; !ok {
+				w.WriteHeader(http.StatusNotFound)
+			} else {
+				//key isnt equal to id, meaning this replica is not a member of the shard we want the key count of
 
-			//grab first ip thats a member of desired shard
-			ipInShard := shardSplit[id][0]
-			forwardResponse := getShardKeyCount(ipInShard, id)
-			w.Write(forwardResponse)
+				//grab first ip thats a member of desired shard
+				ipInShard := shardSplit[id][0]
+				forwardResponse := getShardKeyCount(ipInShard, id)
+				w.Write(forwardResponse)
+			}
 		}
 
 	}
@@ -848,22 +861,46 @@ func handleShardKeyCount(w http.ResponseWriter, req *http.Request) {
 }
 
 func handleShardAddMember(w http.ResponseWriter, req *http.Request) {
-	/*
-		param := mux.Vars(req)
-		id := param["id"]
+	param := mux.Vars(req)
+	reqId := param["id"]
 
-		// create dict variable to hold inputted value
-		var reqVals map[string]string
+	// create dict variable to hold inputted value
+	var reqVals map[string]string
+	response := make(map[string]string)
 
-		// handles pulling out and storing value into newVal
-		err := json.NewDecoder(req.Body).Decode(&reqVals)
+	// handles pulling out and storing value into newVal
+	err := json.NewDecoder(req.Body).Decode(&reqVals)
+	if err != nil {
+		log.Fatalf("Error couldnt decode: %s", err)
+		return
+	}
+	reqIp := reqVals["socket-address"]
+
+	if _, ok := shardSplit[reqId]; !ok || containsVal(reqIp, replicaArray) < 0 {
+		w.WriteHeader(http.StatusNotFound)
+	} else {
+		//add node to shard and update all other replicas in view
+		w.WriteHeader(http.StatusOK)
+		shardSplit[reqId] = append(shardSplit[reqId], reqIp)
+		broadcastBody := make(map[string]string)
+		broadcastBody["add-ip"] = reqIp
+		bBody, err := json.Marshal(broadcastBody)
 		if err != nil {
-			log.Fatalf("Error couldnt decode: %s", err)
-			return
+			log.Fatalf("Error here: %s", err)
 		}
-		reqIp := reqVals["socket-address"]
-	*/
-
+		for _, replicaIp := range replicaArray {
+			if replicaIp != sAddress {
+				fmt.Println("forwarding to ", replicaIp)
+				forwardReq("PUT", replicaIp, fmt.Sprintf("/shard/broadcast/add/%s", reqId), bBody)
+			}
+		}
+		response["result"] = "node added to shard"
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			log.Fatalf("Error here: %s", err)
+		}
+		w.Write(jsonResponse)
+	}
 }
 
 func handleReshard(w http.ResponseWriter, req *http.Request) {
