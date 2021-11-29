@@ -75,7 +75,7 @@ func main() {
 
 	shardCountOutput, err := strconv.Atoi(shardCountString)
 	if err != nil {
-		fmt.Println("error = ", err)
+		fmt.Println("error converting string to int = ", err)
 	}
 	shardCount = shardCountOutput
 	replicaArray = strings.Split(vAddresses, ",")
@@ -868,41 +868,78 @@ func handleShardAddMember(w http.ResponseWriter, req *http.Request) {
 	var reqVals map[string]string
 	response := make(map[string]string)
 
-	// handles pulling out and storing value into newVal
-	err := json.NewDecoder(req.Body).Decode(&reqVals)
-	if err != nil {
-		log.Fatalf("Error couldnt decode: %s", err)
-		return
-	}
-	reqIp := reqVals["socket-address"]
-
-	if _, ok := shardSplit[reqId]; !ok || containsVal(reqIp, replicaArray) < 0 {
-		w.WriteHeader(http.StatusNotFound)
-	} else {
-		//add node to shard and update all other replicas in view
-		w.WriteHeader(http.StatusOK)
-		shardSplit[reqId] = append(shardSplit[reqId], reqIp)
-		broadcastBody := make(map[string]string)
-		broadcastBody["add-ip"] = reqIp
-		bBody, err := json.Marshal(broadcastBody)
+	if req.Method == "PUT" {
+		// handles pulling out and storing value into newVal
+		err := json.NewDecoder(req.Body).Decode(&reqVals)
 		if err != nil {
-			log.Fatalf("Error here: %s", err)
+			log.Fatalf("Error couldnt decode: %s", err)
+			return
 		}
-		for _, replicaIp := range replicaArray {
-			if replicaIp != sAddress {
-				fmt.Println("forwarding to ", replicaIp)
-				forwardReq("PUT", replicaIp, fmt.Sprintf("/shard/broadcast/add/%s", reqId), bBody)
+		reqIp := reqVals["socket-address"]
+
+		if _, ok := shardSplit[reqId]; !ok || containsVal(reqIp, replicaArray) < 0 {
+			w.WriteHeader(http.StatusNotFound)
+		} else {
+			//add node to shard and update all other replicas in view
+			w.WriteHeader(http.StatusOK)
+			shardSplit[reqId] = append(shardSplit[reqId], reqIp)
+			broadcastBody := make(map[string]string)
+			broadcastBody["add-ip"] = reqIp
+			bBody, err := json.Marshal(broadcastBody)
+			if err != nil {
+				log.Fatalf("Error here: %s", err)
 			}
+			for _, replicaIp := range replicaArray {
+				if replicaIp != sAddress {
+					fmt.Println("forwarding to ", replicaIp)
+					forwardReq("PUT", replicaIp, fmt.Sprintf("/shard/broadcast/add/%s", reqId), bBody)
+				}
+			}
+			response["result"] = "node added to shard"
+			jsonResponse, err := json.Marshal(response)
+			if err != nil {
+				log.Fatalf("Error here: %s", err)
+			}
+			w.Write(jsonResponse)
 		}
-		response["result"] = "node added to shard"
+	}
+	
+}
+
+func handleReshard(w http.ResponseWriter, req *http.Request) {
+	// create dict variable to hold inputted value
+	var reqVals map[string]string
+	response := make(map[string]string)
+
+	if req.Method == "PUT" {
+		// handles pulling out and storing value into newVal
+		err := json.NewDecoder(req.Body).Decode(&reqVals)
+		if err != nil {
+			log.Fatalf("Error couldnt decode: %s", err)
+			return
+		}
+		
+		// grabbing shardcount from request json body
+		newShardCount, err := strconv.Atoi(reqVals["shard-count"])
+		if err != nil {
+			fmt.Println("error converting string to int = ", err)
+		}
+
+		// first checking if fault tolerance invariant is violated
+		// i.e. too many shards and too few replicas
+		if float32(replicaCount) / float32(newShardCount) < 2.0 {
+			response["error"] = "Not enough nodes to provide fault tolerance with requested shard count"
+			w.WriteHeader(http.StatusBadRequest)
+		} else{
+			
+		}
+
+		// writing json response
 		jsonResponse, err := json.Marshal(response)
 		if err != nil {
 			log.Fatalf("Error here: %s", err)
 		}
 		w.Write(jsonResponse)
 	}
-}
-
-func handleReshard(w http.ResponseWriter, req *http.Request) {
 
 }
