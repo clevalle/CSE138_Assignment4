@@ -931,7 +931,29 @@ func handleReshard(w http.ResponseWriter, req *http.Request) {
 			response["error"] = "Not enough nodes to provide fault tolerance with requested shard count"
 			w.WriteHeader(http.StatusBadRequest)
 		} else{
-			
+			// creating new store variable to hold the result of combining all the stores of all shards
+			entireStore := make(map[string]interface{})
+
+			// combining our current replica's shard's store into the new entireStore variable
+			for k, v := range store {
+				entireStore[k] = v
+			}
+
+			// loop thru all shards, and their respective replica IP arrays
+			for key, element := range shardSplit {
+				// finding a shard that is not the one we are on
+				// in this case, we must send a request to one of the replicas in that shard to give us their kvs
+        		if key != currentShard {
+					// getting the kvs of the first replicaIP in the shard's replica IP array
+					tempStore := getReplicaKVS(element[0])
+
+					// combining the entireStore with the store we got from the replica
+					for k, v := range tempStore {
+						entireStore[k] = v
+					}
+				}
+    		}
+
 		}
 
 		// writing json response
