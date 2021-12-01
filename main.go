@@ -72,12 +72,13 @@ func main() {
 	// grabbing env variables that are passed in
 	vAddresses := os.Getenv("VIEW")
 	shardCountString := os.Getenv("SHARD_COUNT")
-
-	shardCountOutput, err := strconv.Atoi(shardCountString)
-	if err != nil {
-		fmt.Println("error converting string to int = ", err)
+	if shardCountString != "" {
+		shardCountOutput, err := strconv.Atoi(shardCountString)
+		if err != nil {
+			fmt.Println("error converting string to int = ", err)
+		}
+		shardCount = shardCountOutput
 	}
-	shardCount = shardCountOutput
 	replicaArray = strings.Split(vAddresses, ",")
 	viewArray = strings.Split(vAddresses, ",")
 
@@ -97,7 +98,9 @@ func main() {
 	r.HandleFunc("/view", handleView)
 	r.HandleFunc("/kvs/{key}", handleKey)
 	r.HandleFunc("/getVC", handleGetVC)
+	r.HandleFunc("/setVC", handleSetVC)
 	r.HandleFunc("/getKVS", handleGetKVS)
+	r.HandleFunc("/getShardSplit", handleGetShardSplit)
 
 	// Handlers for sharding requests
 	r.HandleFunc("/shard/ids", handleShardAllId)
@@ -109,14 +112,37 @@ func main() {
 	r.HandleFunc("/shard/broadcast/add/{id}", handleBroadcastedAdd)
 
 	// function that checks if this replica has just died
-	//go didIDie()
+	go didIDie()
 
-	splitNodes(shardCount)
-	currentShard = ipToShardMap[sAddress]
+	if shardCount != -1 {
+		splitNodes(shardCount)
+		currentShard = ipToShardMap[sAddress]
+	}
 	fmt.Println("current shard = ", currentShard)
 
 	// Service listens on port 8090
 	log.Fatal(http.ListenAndServe(":8090", r))
+}
+
+func getShardSplit(replicaIP string) map[string][]string {
+	var response map[string]map[string][]string
+
+	// Creating new request
+	fmt.Println("replicaIP ==== ", replicaIP)
+	res, err := http.Get(fmt.Sprintf("http://%s/getShardSplit", replicaIP))
+	if err != nil {
+		fmt.Println("problem creating new http request here")
+		log.Fatalf("Error: %s", err)
+	}
+
+	// decoding the response of new request
+	decodeError := json.NewDecoder(res.Body).Decode(&response)
+	if decodeError != nil {
+		log.Fatalf("Error: %s", err)
+	}
+	responseShardSplit := response["shard-split"]
+	// returning the VC from other replica
+	return responseShardSplit
 }
 
 func forwardReq(rMethod string, rIP string, rPath string, rBody []byte) ([]byte, int) {
@@ -213,7 +239,7 @@ func splitNodes(shardAmount int) {
 // Used to check if current replica has just died
 func didIDie() {
 	// sleep for a second, so that we can confirm other replicas have time to start up
-	time.Sleep(time.Second * 1)
+	time.Sleep(time.Second * 4) //tests work with 4
 	// checking all elements of current view
 	for _, replicaIP := range viewArray {
 		// if any in the view is not our address
@@ -226,20 +252,24 @@ func didIDie() {
 			if !compareSlices(repVC, localVector) {
 				//set local VC to grabbed VC
 				localVector = repVC
+				shardSplit = getShardSplit(replicaIP)
+				shardCount = len(shardSplit)
+
 				//we know we died and need to grab the new KVS
-				store = getReplicaKVS(replicaIP)
+				//store = getReplicaKVS(replicaIP)
 				//and push our Ip to the replica Array
-				pushIpToReplicas(sAddress)
+				pushToView(sAddress, "socket-address", "view")
+				return
 			}
 		}
 	}
 }
 
 // Function used to send our IP to a replica's view array
-func pushIpToReplicas(replicaIP string) {
+func pushToView(responseVal interface{}, responseName string, URLPath string) {
 	// making a response, and map our socket address
-	response := make(map[string]string)
-	response["socket-address"] = sAddress
+	response := make(map[string]interface{})
+	response[responseName] = responseVal
 
 	// standard json marshal of repsonse
 	jsonResponse, err := json.Marshal(response)
@@ -253,7 +283,7 @@ func pushIpToReplicas(replicaIP string) {
 		if replicaIP != sAddress {
 			client := &http.Client{}
 			// Creating new request to PUT our IP in the replica's view array
-			req, err := http.NewRequest("PUT", fmt.Sprintf("http://%s/view", replicaIP), bytes.NewBuffer(jsonResponse))
+			req, err := http.NewRequest("PUT", fmt.Sprintf("http://%s/%s", replicaIP, URLPath), bytes.NewBuffer(jsonResponse))
 			if err != nil {
 				fmt.Println("problem creating new http request")
 			}
@@ -265,9 +295,9 @@ func pushIpToReplicas(replicaIP string) {
 				return
 			}
 			defer resp.Body.Close()
+			fmt.Printf("push to %s gave response %v \n", replicaIP, resp.StatusCode)
 		}
 	}
-
 }
 
 // Function used to get the kvs store of another replica
@@ -427,6 +457,20 @@ func removeVal(index int, repArray []string) []string {
 	return repArray[:len(repArray)-1]
 }
 
+func handleGetShardSplit(w http.ResponseWriter, req *http.Request) {
+	response := make(map[string]interface{})
+
+	if req.Method == "GET" {
+		response["shard-split"] = shardSplit
+	}
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Fatalf("Error: %s", err)
+	}
+	w.Write(jsonResponse)
+}
+
 func handleBroadcastedAdd(w http.ResponseWriter, req *http.Request) {
 	fmt.Println("broadcast recieved")
 	param := mux.Vars(req)
@@ -438,7 +482,23 @@ func handleBroadcastedAdd(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	shardSplit[id] = append(shardSplit[id], reqVals["add-ip"])
+	if reqVals["add-ip"] == sAddress {
+		currentShard = id
+		store = getReplicaKVS(shardSplit[id][0])
+	}
 	fmt.Println("shard split updated to: ", shardSplit)
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleSetVC(w http.ResponseWriter, req *http.Request) {
+	var reqVals map[string][]int
+	err := json.NewDecoder(req.Body).Decode(&reqVals)
+	if err != nil {
+		log.Fatalf("Error couldnt decode: %s", err)
+		return
+	}
+	localVector = reqVals["VC"]
+	fmt.Println("local vector now set to", localVector)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -657,6 +717,7 @@ func handleKey(w http.ResponseWriter, req *http.Request) {
 							broadcastMessage(replicaIP, req, updatedBody)
 						}
 					}
+					pushToView(localVector, "VC", "setVC")
 				}
 			}
 
@@ -697,7 +758,7 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 	response := make(map[string]interface{})
 
 	// create dict variable to hold inputted value
-	var newVal map[string]string
+	var newVal map[string]interface{}
 
 	if req.Method == "PUT" {
 
@@ -707,7 +768,9 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 			log.Fatalf("Error: %s", err)
 			return
 		}
-		val := newVal["socket-address"]
+		valtemp := newVal["socket-address"]
+		val := fmt.Sprintf("%v", valtemp)
+		fmt.Println("val recieved === ", val)
 
 		// auto adding if this is first replica
 		if replicaCount == 0 {
@@ -739,7 +802,8 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 			log.Fatalf("Error: %s", err)
 			return
 		}
-		val := newVal["socket-address"]
+		valtemp := newVal["socket-address"]
+		val := fmt.Sprintf("%v", valtemp)
 
 		// finding index of the value in replica array
 		index := containsVal(val, replicaArray)
@@ -812,7 +876,7 @@ func handleShardMembers(w http.ResponseWriter, req *http.Request) {
 	if req.Method == "GET" {
 		if shardArray, ok := shardSplit[id]; ok {
 			w.WriteHeader(http.StatusOK)
-			response["shardMembers"] = shardArray
+			response["shard-members"] = shardArray
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -903,7 +967,7 @@ func handleShardAddMember(w http.ResponseWriter, req *http.Request) {
 			w.Write(jsonResponse)
 		}
 	}
-	
+
 }
 
 func handleReshard(w http.ResponseWriter, req *http.Request) {
@@ -918,7 +982,7 @@ func handleReshard(w http.ResponseWriter, req *http.Request) {
 			log.Fatalf("Error couldnt decode: %s", err)
 			return
 		}
-		
+
 		// grabbing shardcount from request json body
 		newShardCount, err := strconv.Atoi(reqVals["shard-count"])
 		if err != nil {
@@ -927,10 +991,10 @@ func handleReshard(w http.ResponseWriter, req *http.Request) {
 
 		// first checking if fault tolerance invariant is violated
 		// i.e. too many shards and too few replicas
-		if float32(replicaCount) / float32(newShardCount) < 2.0 {
+		if float32(replicaCount)/float32(newShardCount) < 2.0 {
 			response["error"] = "Not enough nodes to provide fault tolerance with requested shard count"
 			w.WriteHeader(http.StatusBadRequest)
-		} else{
+		} else {
 			// creating new store variable to hold the result of combining all the stores of all shards
 			entireStore := make(map[string]interface{})
 
@@ -943,7 +1007,7 @@ func handleReshard(w http.ResponseWriter, req *http.Request) {
 			for key, element := range shardSplit {
 				// finding a shard that is not the one we are on
 				// in this case, we must send a request to one of the replicas in that shard to give us their kvs
-        		if key != currentShard {
+				if key != currentShard {
 					// getting the kvs of the first replicaIP in the shard's replica IP array
 					tempStore := getReplicaKVS(element[0])
 
@@ -952,7 +1016,7 @@ func handleReshard(w http.ResponseWriter, req *http.Request) {
 						entireStore[k] = v
 					}
 				}
-    		}
+			}
 
 		}
 
