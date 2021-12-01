@@ -121,4 +121,7 @@ by the number of shards, which will return a number from 0 to shardCount - 1. We
 off of that (we essentially evenly distribute the nodes to shards).
 
 Describe the approach you take to map keys-to-shards (Decide how to shard keys across nodes):
-The approach we take to map keys to shards is to first 
+first we created a hash function, which takes a go hash library and returns an integer which we then modulo with the shard count to
+produce an integer between 0 and shardCount-1 (lets call this value x). we then have variable 'hashToIndexArr' which is an array of 
+all the shard ID's. We can find the key to shard mapping by indexing the array by the value x we got earlier to know what shard the 
+key belongs to.

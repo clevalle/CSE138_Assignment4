@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -43,10 +44,10 @@ var viewArray []string    // array of IP's currently in view i.e. online
 var vectorIndex = -1      // represents which index in replicaArray this current thread is
 var shardCount = -1       // represents # of shards we are given at start of program
 
-var shardSplit = make(map[string][]string)   // map of shard names to an array of the IP's in that shard
-var ipToShardMap = make(map[string]string)   // map for use when switching between an IP and a shard
-var hashIndexArr []string                    // array of all shard names
-var currentShard string                      // indicates which shard this instance is a part of
+var shardSplit = make(map[string][]string) // map of shard names to an array of the IP's in that shard
+var ipToShardMap = make(map[string]string) // map for use when switching between an IP and a shard
+var hashIndexArr []string                  // array of all shard names
+var currentShard string                    // indicates which shard this instance is a part of
 
 // first 3 integers represent the vector clock of the local replica
 // 4th vector is the index of the Ip that all replicas have access to
@@ -237,7 +238,7 @@ func splitNodes(shardAmount int) {
 		ipToShardMap[replicaArray[i]] = "s" + strconv.Itoa(x)
 	}
 
-	// adding shard names, i.e. s0 s1 s2 
+	// adding shard names, i.e. s0 s1 s2
 	for i := 0; i < shardCount; i++ {
 		shardName := "s" + strconv.Itoa(i)
 		shardSplit[shardName] = shardSplitArray[i]
@@ -442,6 +443,29 @@ func broadcastMessage(replicaIP string, req *http.Request, updatedBody []byte) {
 				//fmt.Println("delete body == ", res.Body)
 			}
 		}
+		//check if system needs to be resharded
+		shardDist := float64(len(replicaArray)) / float64(shardCount)
+		if shardDist < 2.0 {
+			shardResponse := make(map[string]float64)
+			newShardCount := math.Floor(shardDist)
+			shardResponse["shard-count"] = newShardCount
+			shardBodyJson, err := json.Marshal(shardResponse)
+			if err != nil {
+				log.Fatalf("Error: %s", err)
+			}
+			client := &http.Client{}
+			req, err := http.NewRequest(req.Method, fmt.Sprintf("http://%s/shard/reshard", sAddress), bytes.NewBuffer(shardBodyJson))
+			if err != nil {
+				fmt.Println("problem creating new http request")
+				return
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				fmt.Println(replicaIP, " is down due to: ", err)
+				return
+			}
+			resp.Body.Close()
+		}
 		return
 	}
 	reachedURL.Close()
@@ -488,7 +512,7 @@ func handleGetShardSplit(w http.ResponseWriter, req *http.Request) {
 	w.Write(jsonResponse)
 }
 
-// handler function that will add an IP to a shard 
+// handler function that will add an IP to a shard
 func handleBroadcastedAdd(w http.ResponseWriter, req *http.Request) {
 	fmt.Println("broadcast recieved")
 
@@ -517,7 +541,7 @@ func handleBroadcastedAdd(w http.ResponseWriter, req *http.Request) {
 
 // handler function that will set local VC to a value
 func handleSetVC(w http.ResponseWriter, req *http.Request) {
-	// assigning variables needed 
+	// assigning variables needed
 	var reqVals map[string][]int
 	err := json.NewDecoder(req.Body).Decode(&reqVals)
 	if err != nil {
@@ -894,7 +918,6 @@ func handleView(w http.ResponseWriter, req *http.Request) {
 	w.Write(jsonResponse)
 }
 
-
 // Handler function that will handle return all shard ID's
 func handleShardAllId(w http.ResponseWriter, req *http.Request) {
 	// assigning variables needed
@@ -1103,7 +1126,7 @@ func handleReshard(w http.ResponseWriter, req *http.Request) {
 				storeMap[shard] = make(map[string]interface{})
 			}
 
-			// going thru and hashing each kv pair in the store, and adding the values 
+			// going thru and hashing each kv pair in the store, and adding the values
 			// to their respoective stores based on index in the store array
 			for key, val := range entireStore {
 				hashedKey := hash(key)
@@ -1111,16 +1134,16 @@ func handleReshard(w http.ResponseWriter, req *http.Request) {
 				shardStore = storeMap[shardKeyBelongsTo]
 				shardStore[key] = val
 			}
-			
+
 			// deebug
 			fmt.Println("storemap === ", storeMap)
 			fmt.Println("shard split == ", shardSplit)
 
-			// creating new requests to send to replica's, i.e. their stores 
+			// creating new requests to send to replica's, i.e. their stores
 			reshardBody := make(map[string]interface{})
 			reshardBody["shard-count"] = newShardCount
 
-			// looping thru all shards 
+			// looping thru all shards
 			for shardName, shard := range shardSplit {
 				// assigning their new shard stores
 				reshardBody["shard-store"] = storeMap[shardName]
