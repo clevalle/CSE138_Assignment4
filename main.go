@@ -97,10 +97,13 @@ func main() {
 	// Handlers for each scenario of input for URL
 	r.HandleFunc("/view", handleView)
 	r.HandleFunc("/kvs/{key}", handleKey)
+
+	// helper functions for communication between nodes/replicas
 	r.HandleFunc("/getVC", handleGetVC)
 	r.HandleFunc("/setVC", handleSetVC)
 	r.HandleFunc("/getKVS", handleGetKVS)
 	r.HandleFunc("/getShardSplit", handleGetShardSplit)
+	r.HandleFunc("/reSplitNodes", handleReSplitNodes)
 
 	// Handlers for sharding requests
 	r.HandleFunc("/shard/ids", handleShardAllId)
@@ -211,6 +214,9 @@ func findKey(m map[string][]string, value string) (key string, ok bool) {
 
 func splitNodes(shardAmount int) {
 	shardSplitArray := make([][]string, 0)
+	shardSplit = make(map[string][]string)
+ 	ipToShardMap = make(map[string]string)
+
 	shardCount = shardAmount
 	hashIndexArr = nil
 
@@ -534,7 +540,42 @@ func handleGetKVS(w http.ResponseWriter, req *http.Request) {
 	w.Write(jsonResponse)
 }
 
-// Handler function that handles all operations wheb we are  given
+// Handler function that handles receiving a shardSplit from a request's body
+// Used in accomplishing handleReshard's goal of having every other replica be aware
+// of the new shards after resharding
+handleReSplitNodes(w http.ResponseWriter, req *http.Request) {
+	// create dict variable to hold inputted value
+	var reqVals map[string]string
+	response := make(map[string]string)
+
+	if req.Method == "PUT" {
+		// handles pulling out and storing value into newVal
+		err := json.NewDecoder(req.Body).Decode(&reqVals)
+		if err != nil {
+			log.Fatalf("Error couldnt decode: %s", err)
+			return
+		}
+
+		// grabbing shardcount from request json body
+		newShardCount, err := strconv.Atoi(reqVals["shard-count"])
+		if err != nil {
+			fmt.Println("error converting string to int = ", err)
+		}
+
+		splitNodes(newShardCount)
+		currentShard = ipToShardMap[sAddress]
+
+		// writing json response
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			log.Fatalf("Error here: %s", err)
+		}
+		w.Write(jsonResponse)
+	}
+
+}
+
+// Handler function that handles all operations when we are  given
 // requests regarding our KVS
 func handleKey(w http.ResponseWriter, req *http.Request) {
 
@@ -1018,6 +1059,17 @@ func handleReshard(w http.ResponseWriter, req *http.Request) {
 				}
 			}
 
+			splitNodes(newShardCount)
+			currentShard = ipToShardMap[sAddress]
+
+
+		
+
+
+
+			for key, val := range entireStore {
+
+			}
 		}
 
 		// writing json response
